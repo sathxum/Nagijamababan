@@ -1,4 +1,4 @@
-name: Nexus Windows RDP Deployment
+name: Nexus Ubuntu VPS Deployment
 on: 
   push:
     branches: [ main, master ]
@@ -8,7 +8,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     
     steps:
@@ -17,61 +17,48 @@ jobs:
       
     - name: Setup Environment
       run: |
-        Write-Host "╔════════════════════════════════════╗" -ForegroundColor Cyan
-        Write-Host "║     NEXUS RDP DEPLOYMENT v2.2      ║" -ForegroundColor Cyan
-        Write-Host "╚════════════════════════════════════╝" -ForegroundColor Cyan
+        echo -e "\e[36m╔════════════════════════════════════╗\e[0m"
+        echo -e "\e[36m║     NEXUS UBUNTU DEPLOYMENT v2.2   ║\e[0m"
+        echo -e "\e[36m╚════════════════════════════════════╝\e[0m"
         
-    - name: Install Ngrok
+    - name: Create SSH User Account
       run: |
-        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-        Expand-Archive ngrok.zip -DestinationPath .
-        Move-Item .\ngrok.exe C:\Windows\System32\ngrok.exe -Force
+        sudo useradd -m -s /bin/bash Sinket
+        echo "Sinket:Admin@123" | sudo chpasswd
+        sudo usermod -aG sudo Sinket
+        echo -e "\e[32m[SUCCESS] User Sinket created successfully\e[0m"
         
-    - name: Configure Ngrok
-      run: ngrok authtoken 3DW8vmwVo7aYezScEd3u5oxF1MD_3UMGtriR5TAzc9wRVhNS1
-      
-    - name: Configure RDP
+    - name: Install & Configure Ngrok
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "MaxConnectionTime" -Value 0
+        curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/keyrings/ngrok.asc >/dev/null
+        echo "deb [signed-by=/etc/apt/keyrings/ngrok.asc] https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+        sudo apt-get update && sudo apt-get install ngrok -y
+        ngrok authtoken 3DW8vmwVo7aYezScEd3u5oxF1MD_3UMGtriR5TAzc9wRVhNS1
         
-    - name: Create User Account
+    - name: Start Ngrok Tunnel
       run: |
-        $password = ConvertTo-SecureString "Admin@123" -AsPlainText -Force
-        New-LocalUser "Sinket" -Password $password -FullName "Nexus Admin" -Description "Auto-generated RDP User"
-        Add-LocalGroupMember -Group "Administrators" -Member "Sinket"
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Sinket"
-        Write-Host "[SUCCESS] User Sinket created successfully" -ForegroundColor Green
+        nohup ngrok tcp 22 --log=stdout > ngrok.log &
+        sleep 10
         
-    - name: Disable Power Saving
+    - name: Output Connection Details
       run: |
-        powercfg /change monitor-timeout-ac 0
-        powercfg /change standby-timeout-ac 0
-        powercfg /change hibernate-timeout-ac 0
-        
-    - name: Establish Tunnel
-      run: |
-        Write-Host "[INFO] Starting Ngrok tunnel on port 3389..." -ForegroundColor Yellow
-        Start-Process ngrok -ArgumentList "tcp 3389" -WindowStyle Hidden
-        Start-Sleep -Seconds 5
-        try {
-            $tunnel = Invoke-RestMethod http://localhost:4040/api/tunnels
-            Write-Host "[SUCCESS] Tunnel Established!" -ForegroundColor Green
-            Write-Host "=====================================" -ForegroundColor Cyan
-            Write-Host "RDP Address : $($tunnel.tunnels.public_url)" -ForegroundColor Cyan
-            Write-Host "Username    : Sinket" -ForegroundColor Cyan
-            Write-Host "Password    : Admin@123" -ForegroundColor Cyan
-            Write-Host "=====================================" -ForegroundColor Cyan
-        } catch {
-            Write-Host "[ERROR] Failed to get tunnel info. Ngrok might still be starting..." -ForegroundColor Red
-        }
+        echo -e "\e[32m[SUCCESS] Ngrok Tunnel Established!\e[0m"
+        export NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+        export NGROK_HOST=$(echo $NGROK_URL | sed 's/tcp:\/\///' | cut -d ':' -f 1)
+        export NGROK_PORT=$(echo $NGROK_URL | sed 's/tcp:\/\///' | cut -d ':' -f 2)
+        echo -e "\e[36m=====================================\e[0m"
+        echo -e "\e[36mConnect using Termius:\e[0m"
+        echo -e "\e[36mHost/IP     : $NGROK_HOST\e[0m"
+        echo -e "\e[36mPort        : $NGROK_PORT\e[0m"
+        echo -e "\e[36mUsername    : Sinket\e[0m"
+        echo -e "\e[36mPassword    : Admin@123\e[0m"
+        echo -e "\e[36mSSH Command : ssh -p $NGROK_PORT Sinket@$NGROK_HOST\e[0m"
+        echo -e "\e[36m=====================================\e[0m"
         
     - name: Keep Alive
       run: |
-        Write-Host "[INFO] Session active for 6 hours max..." -ForegroundColor Yellow
-        for ($i = 360; $i -gt 0; $i--) {
-            Write-Host "Time remaining: $i minutes" -ForegroundColor Gray
-            Start-Sleep -Seconds 60
-        }
+        echo "Session active for 6 hours max..."
+        for i in {360..1}; do
+            echo "Time remaining: $i minutes"
+            sleep 60
+        done
